@@ -215,24 +215,69 @@ function renderSaved() {
   savedDiv.innerHTML = "";
   const items = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
 
-  items.forEach(({ title, iv, data }, i) => {
-    const btn = document.createElement("button");
-    btn.textContent = `🔒 ${title}`;
-    btn.onclick = async () => {
-      const password = prompt("マスターパスワードを入力してください");
-      if (!await verifyMasterPassword(password)) return alert("認証に失敗しました");
+  items.forEach(({ title, iv, data, secret }, i) => {
+    const wrapper = document.createElement("div");
 
-      try {
-        const secret = await decryptSecret({ iv, data }, password);
+    const btn = document.createElement("button");
+    btn.textContent = iv || data ? `🔒 ${title}` : `🔓 ${title}`;
+    btn.onclick = async () => {
+      if (iv && data) {
+        const password = prompt("マスターパスワードを入力してください");
+        if (!await verifyMasterPassword(password)) return alert("認証に失敗しました");
+        try {
+          const secretVal = await decryptSecret({ iv, data }, password);
+          secretInput.value = secretVal;
+          titleInput.value = title;
+          generateOTP(secretVal);
+        } catch {
+          alert("復号に失敗しました");
+        }
+      } else if (secret) {
         secretInput.value = secret;
         titleInput.value = title;
         generateOTP(secret);
-      } catch {
-        alert("復号に失敗しました");
       }
     };
-    savedDiv.appendChild(btn);
+
+    const delBtn = document.createElement("button");
+    delBtn.textContent = "🗑️";
+    delBtn.onclick = () => {
+      if (confirm(`「${title}」を削除しますか？`)) {
+        const updated = [...items.slice(0, i), ...items.slice(i + 1)];
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+        renderSaved();
+      }
+    };
+
+    wrapper.appendChild(btn);
+    wrapper.appendChild(delBtn);
+    savedDiv.appendChild(wrapper);
   });
+}
+
+async function saveSecret() {
+  const title = titleInput.value.trim();
+  const secret = secretInput.value.trim();
+  if (!title || !secret) return alert("タイトルとキーを入力してください");
+
+  const items = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+  if (items.length >= 3) return alert("最大3件まで保存できます");
+
+  const hasMaster = !!localStorage.getItem(MASTER_PASSWORD_KEY);
+  let newItem;
+
+  if (hasMaster) {
+    const password = prompt("マスターパスワードを入力してください");
+    if (!await verifyMasterPassword(password)) return alert("認証に失敗しました");
+    const encrypted = await encryptSecret(secret, password);
+    newItem = { title, ...encrypted };
+  } else {
+    newItem = { title, secret };
+  }
+
+  const newItems = [...items, newItem];
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(newItems));
+  renderSaved();
 }
 
 async function encryptSecret(secret, password) {
