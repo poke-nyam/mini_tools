@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>TOTPジェネレーター</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <style>
+    * {
+      text-align: center;
+      font-family: sans-serif;
+    }
+
+    body {
+      color: black;
+      border-radius: 30px;
+      width: 500px;
+      margin: 20px auto;
+      padding: 20px;
+      box-shadow: 3px 3px 10px rgba(0,0,0,0.3);
+      background: #fff;
+      transition: background-color 0.3s, color 0.3s;
+    }
+
+    body.dark {
+      background: #1e1e1e;
+      color: white;
+    }
+
+    input {
+      padding: 8px;
+      width: 80%;
+      margin: 5px;
+    }
+
+    button {
+      margin: 5px;
+      padding: 5px 10px;
+    }
+
+    #dropZone {
+      border: 2px dashed #888;
+      padding: 15px;
+      margin: 15px;
+      color: #555;
+    }
+
+    #saved button {
+      display: inline-block;
+      margin: 3px;
+      padding: 3px 8px;
+    }
+
+    #progressBarContainer {
+      width: 100%;
+      height: 10px;
+      background: #ccc;
+      margin: 10px 0;
+    }
+
+    #progressBar {
+      height: 100%;
+      background: #007bff;
+      width: 100%;
+      transition: width 1s linear;
+    }
+  </style>
+</head>
+<body>
+  <button onclick="toggleDarkMode()">🌙 ダークモード</button>
+
+  <h2>TOTPコード生成機(?)</h2>
+
+  <div>
+    <input type="text" id="title" placeholder="タイトル（例: Google）"><br>
+    <input type="text" id="secret" placeholder="シークレットキー（Base32）"><br>
+    <button onclick="saveSecret()">保存（保護）</button>
+  </div>
+
+  <div id="saved"></div>
+
+  <h3 id="otp">------</h3>
+
+  <div id="progressBarContainer">
+    <div id="progressBar"></div>
+  </div>
+
+  <script>
+    const otpEl = document.getElementById("otp");
+    const secretInput = document.getElementById("secret");
+    const titleInput = document.getElementById("title");
+    const progressBar = document.getElementById("progressBar");
+    const savedDiv = document.getElementById("saved");
+
+    function base32ToBytes(base32) {
+      const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+      let bits = 0, value = 0, output = [];
+      base32 = base32.toUpperCase().replace(/[^A-Z2-7]/g, '');
+      for (let i = 0; i < base32.length; i++) {
+        value = (value << 5) | chars.indexOf(base32[i]);
+        bits += 5;
+        if (bits >= 8) {
+          output.push((value >> (bits - 8)) & 0xff);
+          bits -= 8;
+        }
+      }
+      return new Uint8Array(output);
+    }
+
+    function extractOTP(hash) {
+      const offset = hash[hash.length - 1] & 0x0f;
+      const binary = ((hash[offset] & 0x7f) << 24) |
+        ((hash[offset + 1] & 0xff) << 16) |
+        ((hash[offset + 2] & 0xff) << 8) |
+        (hash[offset + 3] & 0xff);
+      return (binary % 1e6).toString().padStart(6, '0');
+    }
+
+    async function generateOTP(secret) {
+      try {
+        const epoch = Math.floor(Date.now() / 1000);
+        const counter = Math.floor(epoch / 30);
+        const key = base32ToBytes(secret);
+        const hmacKey = await crypto.subtle.importKey(
+          "raw", key, { name: "HMAC", hash: "SHA-1" }, false, ["sign"]
+        );
+        const buffer = new ArrayBuffer(8);
+        new DataView(buffer).setBigUint64(0, BigInt(counter));
+        const sig = await crypto.subtle.sign("HMAC", hmacKey, buffer);
+        const otp = extractOTP(new Uint8Array(sig));
+        otpEl.textContent = otp;
+      } catch {
+        otpEl.textContent = "無効なキー";
+      }
+    }
+
+let lastSecret = "";
+
+  function resetOnSecretChange() {
+    const current = secretInput.value.trim();
+    if (current !== lastSecret) {
+      lastSecret = current;
+      generateOTP(current); // 即座にOTP更新
+    }
+  }
+
+  // 毎フレーム呼ばれてる updateLoop に追加
+  function updateLoop() {
+    const secret = secretInput.value.trim();
+    const now = Date.now();
+    const seconds = Math.floor(now / 1000);
+    const remain = 30 - (seconds % 30);
+    const percent = (remain / 30) * 100;
+    progressBar.style.width = `${percent}%`;
+
+    // 秘密キーが変わったら即時リセット
+    resetOnSecretChange();
+
+    if (remain === 30 || seconds % 30 === 0) {
+      generateOTP(secret);
+    }
+
+    requestAnimationFrame(updateLoop);
+  }
+    function saveSecret() {
+      const title = titleInput.value.trim();
+      const secret = secretInput.value.trim();
+      if (!title || !secret) return alert("タイトルとキーを入力してください");
+      const items = JSON.parse(localStorage.getItem("totp-secrets") || "[]");
+      if (items.length >= 3) return alert("最大3件まで保存できます");
+
+      const newItems = [...items, { title, secret }];
+      localStorage.setItem("totp-secrets", JSON.stringify(newItems));
+      renderSaved();
+    }
+
+    function renderSaved() {
+      savedDiv.innerHTML = "";
+      const items = JSON.parse(localStorage.getItem("totp-secrets") || "[]");
+      items.forEach(({ title, secret }, i) => {
+        const btn = document.createElement("button");
+        btn.textContent = `🔒 ${title}`;
+        btn.onclick = async () => {
+          const ok = await verifyAuth();
+          if (ok) {
+            secretInput.value = secret;
+            titleInput.value = title;
+            generateOTP(secret);
+          } else {
+            alert("認証に失敗しました");
+          }
+        };
+        savedDiv.appendChild(btn);
+      });
+    }
+
+    async function verifyAuth() {
+      try {
+        const cred = await navigator.credentials.get({
+          publicKey: {
+            challenge: new Uint8Array(32),
+            timeout: 60000,
+            userVerification: "required",
+          }
+        });
+        return !!cred;
+      } catch {
+        return false;
+      }
+    }
+
+    function toggleDarkMode() {
+      const dark = document.body.classList.toggle("dark");
+      localStorage.setItem("darkMode", dark ? "1" : "0");
+    }
+
+    (function init() {
+      if (localStorage.getItem("darkMode") === "1") {
+        document.body.classList.add("dark");
+      }
+      renderSaved();
+      requestAnimationFrame(updateLoop);
+    })();
+  </script>
+</body>
+</html>
